@@ -1,0 +1,215 @@
+/* ============================================================
+   TASK 3 — SQL FOR DATA ANALYSIS
+   This file contains ALL required SQL queries for the entire task
+   ============================================================ */
+
+/* ------------------------------------------------------------
+   1) Basic SELECT + WHERE + ORDER BY
+   ------------------------------------------------------------ */
+
+-- Users who signed up in 2024
+SELECT user_id, name, email, signup_date
+FROM users
+WHERE signup_date BETWEEN '2024-01-01' AND '2024-12-31'
+ORDER BY signup_date DESC;
+
+
+/* ------------------------------------------------------------
+   2) JOIN Queries: INNER, LEFT, RIGHT
+   ------------------------------------------------------------ */
+
+-- INNER JOIN: orders with user details
+SELECT o.order_id, o.order_date, o.total_amount, u.user_id, u.name
+FROM orders o
+INNER JOIN users u ON o.user_id = u.user_id
+ORDER BY o.order_date DESC;
+
+-- LEFT JOIN: all users + their orders if any
+SELECT u.user_id, u.name, o.order_id, o.order_date
+FROM users u
+LEFT JOIN orders o ON u.user_id = o.user_id
+ORDER BY u.user_id;
+
+-- RIGHT JOIN: all orders even if user missing (MySQL/Postgres)
+SELECT o.order_id, o.order_date, u.user_id, u.name
+FROM orders o
+RIGHT JOIN users u ON o.user_id = u.user_id;
+
+
+/* ------------------------------------------------------------
+   3) GROUP BY, Aggregations, HAVING
+   ------------------------------------------------------------ */
+
+-- Monthly revenue
+SELECT DATE_FORMAT(order_date, '%Y-%m') AS month,
+       COUNT(*) AS orders_count,
+       SUM(total_amount) AS revenue
+FROM orders
+WHERE status = 'completed'
+GROUP BY month
+ORDER BY month;
+
+-- Categories with average rating >= 4 (HAVING)
+SELECT p.category, AVG(r.rating) AS avg_rating
+FROM products p
+JOIN reviews r ON p.product_id = r.product_id
+GROUP BY p.category
+HAVING AVG(r.rating) >= 4
+ORDER BY avg_rating DESC;
+
+
+/* ------------------------------------------------------------
+   4) ARPU (Average Revenue Per User)
+   ------------------------------------------------------------ */
+
+-- Method 1: total revenue / distinct buyers
+SELECT SUM(total_amount) / NULLIF(COUNT(DISTINCT user_id), 0) AS arpu
+FROM orders
+WHERE status='completed';
+
+-- Method 2: AVG of per-user spend
+SELECT AVG(user_total) AS arpu_by_user
+FROM (
+    SELECT user_id, SUM(total_amount) AS user_total
+    FROM orders
+    WHERE status='completed'
+    GROUP BY user_id
+) AS t;
+
+
+/* ------------------------------------------------------------
+   5) Subqueries (scalar, IN, correlated)
+   ------------------------------------------------------------ */
+
+-- Scalar subquery: Latest order per user
+SELECT u.user_id, u.name,
+       (SELECT MAX(order_date)
+        FROM orders o
+        WHERE o.user_id = u.user_id) AS last_order_date
+FROM users u;
+
+-- IN subquery: Top 10 selling products
+SELECT product_id, name, category
+FROM products
+WHERE product_id IN (
+    SELECT product_id
+    FROM order_items
+    GROUP BY product_id
+    ORDER BY SUM(quantity) DESC
+    LIMIT 10
+);
+
+-- Correlated subquery: User's highest value order
+SELECT o.order_id, o.user_id, o.total_amount
+FROM orders o
+WHERE o.total_amount = (
+    SELECT MAX(total_amount)
+    FROM orders o2
+    WHERE o2.user_id = o.user_id
+);
+
+
+/* ------------------------------------------------------------
+   6) Views (save monthly KPIs)
+   ------------------------------------------------------------ */
+
+DROP VIEW IF EXISTS monthly_revenue;
+
+CREATE VIEW monthly_revenue AS
+SELECT DATE_FORMAT(order_date, '%Y-%m') AS month,
+       COUNT(*) AS orders_count,
+       SUM(total_amount) AS revenue
+FROM orders
+WHERE status='completed'
+GROUP BY month;
+
+-- View output
+SELECT * FROM monthly_revenue ORDER BY month;
+
+
+/* ------------------------------------------------------------
+   7) NULL Handling
+   ------------------------------------------------------------ */
+
+-- Replace NULL order amount with 0
+SELECT order_id, IFNULL(total_amount, 0) AS safe_amount
+FROM orders;
+
+-- Example: Count non-null ratings
+SELECT COUNT(rating) AS non_null_ratings,
+       COUNT(*) AS total_reviews
+FROM reviews;
+
+
+/* ------------------------------------------------------------
+   8) Top Products, Top Customers, Conversion Metrics
+   ------------------------------------------------------------ */
+
+-- Top 10 products by quantity sold
+SELECT p.product_id, p.name, p.category, SUM(oi.quantity) AS total_qty
+FROM order_items oi
+JOIN products p ON p.product_id = oi.product_id
+GROUP BY p.product_id, p.name, p.category
+ORDER BY total_qty DESC
+LIMIT 10;
+
+-- Top 10 customers by revenue
+SELECT u.user_id, u.name, SUM(o.total_amount) AS total_spent
+FROM orders o
+JOIN users u ON u.user_id = o.user_id
+WHERE o.status='completed'
+GROUP BY u.user_id, u.name
+ORDER BY total_spent DESC
+LIMIT 10;
+
+-- Conversion rate (only if visits table exists)
+-- #buyers / #visitors
+-- SELECT (COUNT(DISTINCT o.user_id) * 1.0 / NULLIF(COUNT(DISTINCT v.user_id), 0)) AS conversion_rate
+-- FROM visits v
+-- LEFT JOIN orders o ON o.user_id = v.user_id AND o.status='completed';
+
+
+/* ------------------------------------------------------------
+   9) Query Optimization (Indexes)
+   ------------------------------------------------------------ */
+
+-- Common useful indexes
+CREATE INDEX idx_orders_userid ON orders(user_id);
+CREATE INDEX idx_orders_date   ON orders(order_date);
+CREATE INDEX idx_items_product ON order_items(product_id);
+
+
+/* ------------------------------------------------------------
+   10) Combined KPI Query (Monthly ARPU)
+   ------------------------------------------------------------ */
+
+SELECT mr.month,
+       mr.revenue,
+       mr.orders_count,
+       au.active_users,
+       mr.revenue / NULLIF(au.active_users,0) AS arpu
+FROM monthly_revenue mr
+LEFT JOIN (
+    SELECT DATE_FORMAT(order_date, '%Y-%m') AS month,
+           COUNT(DISTINCT user_id) AS active_users
+    FROM orders
+    WHERE status='completed'
+    GROUP BY month
+) AS au USING (month)
+ORDER BY mr.month;
+
+
+/* ------------------------------------------------------------
+   11) Final KPI View
+   ------------------------------------------------------------ */
+
+DROP VIEW IF EXISTS top_kpi;
+
+CREATE VIEW top_kpi AS
+SELECT
+    (SELECT SUM(total_amount) FROM orders WHERE status='completed') AS total_revenue,
+    (SELECT COUNT(DISTINCT user_id) FROM orders WHERE status='completed') AS buyer_count,
+    (SELECT SUM(total_amount) / NULLIF(COUNT(DISTINCT user_id),0)
+     FROM orders WHERE status='completed') AS arpu;
+
+SELECT * FROM top_kpi;
